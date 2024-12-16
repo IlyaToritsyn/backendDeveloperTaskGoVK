@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"math/rand"
 	"reflect"
@@ -33,7 +32,6 @@ type testWorkerData struct {
 type testWorkerResult struct {
 	output                string
 	isDeletedDueToTimeout bool
-	isWgDone              bool
 }
 
 func TestGenerator(t *testing.T) {
@@ -90,80 +88,62 @@ func TestGenerator(t *testing.T) {
 }
 
 func TestWorker(t *testing.T) {
-	workerId1 := rand.Int()
-	//workerId2 := rand.Int()
-	//workerId3 := rand.Int()
-
 	buffer := &bytes.Buffer{}
 
-	workerInChClosed := make(chan string)
-	close(workerInChClosed)
-
-	workerWg := &sync.WaitGroup{}
-
-	workerText1 := fmt.Sprintf("[Воркер %d]", workerId1)
-	//workerText2 := fmt.Sprintf("[Воркер %d]", workerId2)
-	//workerText3 := fmt.Sprintf("[Воркер %d]", workerId3)
-
-	workerOutput1 := fmt.Sprintf(`%s	Добавлен
-%s		Данные: data1
-%s		Данные: data2
-%s	Удален
-`, workerText1, workerText1, workerText1, workerText1)
-	//	workerOutput2 := fmt.Sprintf(`%s	Добавлен
-	//%s		Данные: data1
-	//%s	Удален
-	//`, workerText2, workerText2, workerText2)
-	//	workerOutput3 := fmt.Sprintf(`%s	Добавлен
-	//%s	Удален
-	//`, workerText3, workerText3)
+	workerOutputData := `[Воркер 1]	Добавлен
+[Воркер 1]		Данные: data1
+[Воркер 1]	Удален
+`
+	workerOutputNoData := `[Воркер 1]	Добавлен
+[Воркер 1]	Удален
+`
 
 	testCases := []testCase{
 		{
 			id: 1,
 			data: testWorkerData{
-				id:                   workerId1,
+				id:                   1,
 				writer:               buffer,
-				waitDurationToDelete: time.Duration(100+rand.Intn(901)) * time.Millisecond,
-				inCh:                 nil,
-				wg:                   workerWg,
+				waitDurationToDelete: 1,
+				inCh:                 make(chan string),
+				wg:                   &sync.WaitGroup{},
 			},
 			expectedResult: testWorkerResult{
-				output:                workerOutput1,
+				output:                workerOutputData,
 				isDeletedDueToTimeout: false,
-				isWgDone:              true,
 			},
 		},
-		//{
-		//	id: 2,
-		//	data: testWorkerData{
-		//		id:                   workerId2,
-		//		writer:               buffer,
-		//		waitDurationToDelete: time.Duration(100+rand.Intn(901)) * time.Millisecond,
-		//		inCh:                 nil,
-		//		wg:                   workerWg,
-		//	},
-		//	expectedResult: testWorkerResult{
-		//		output:                workerOutput2,
-		//		isDeletedDueToTimeout: true,
-		//		isWgDone:              true,
-		//	},
-		//},
-		//{
-		//	id: 3,
-		//	data: testWorkerData{
-		//		id:                   workerId3,
-		//		writer:               buffer,
-		//		waitDurationToDelete: time.Duration(100+rand.Intn(901)) * time.Millisecond,
-		//		inCh:                 workerInChClosed,
-		//		wg:                   workerWg,
-		//	},
-		//	expectedResult: testWorkerResult{
-		//		output:                workerOutput3,
-		//		isDeletedDueToTimeout: false,
-		//		isWgDone:              true,
-		//	},
-		//},
+
+		// Тест НЕ стабильный
+		{
+			id: 2,
+			data: testWorkerData{
+				id:                   1,
+				writer:               buffer,
+				waitDurationToDelete: 1,
+				inCh:                 make(chan string),
+				wg:                   &sync.WaitGroup{},
+			},
+			expectedResult: testWorkerResult{
+				output:                workerOutputNoData,
+				isDeletedDueToTimeout: true,
+			},
+		},
+
+		{
+			id: 3,
+			data: testWorkerData{
+				id:                   1,
+				writer:               buffer,
+				waitDurationToDelete: time.Duration(100+rand.Intn(901)) * time.Millisecond,
+				inCh:                 make(chan string),
+				wg:                   &sync.WaitGroup{},
+			},
+			expectedResult: testWorkerResult{
+				output:                workerOutputNoData,
+				isDeletedDueToTimeout: false,
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -173,32 +153,33 @@ func TestWorker(t *testing.T) {
 		go worker(workerData.id, workerData.writer, workerData.waitDurationToDelete,
 			workerData.inCh, workerData.wg)
 
-		switch tc.id {
-		case 1:
-			workerData.inCh = make(chan string)
-			//workerData.inCh <- "data1"
-			//workerData.inCh <- "data2"
-			close(workerData.inCh)
-		case 2:
-			workerData.inCh = make(chan string)
-			workerData.inCh <- "data1"
-
-			time.Sleep(workerData.waitDurationToDelete + 100*time.Millisecond)
-
-			workerData.inCh <- "data2"
-			close(workerData.inCh)
-		}
-
 		expectedResult := tc.expectedResult.(testWorkerResult)
 		actualResult := testWorkerResult{}
-		actualResult.output = buffer.String()
-		actualResult.isDeletedDueToTimeout = len(workerData.inCh) > 0
+
+		switch tc.id {
+		case 1:
+			select {
+			case workerData.inCh <- "data1":
+			case <-time.After(time.Second):
+				actualResult.isDeletedDueToTimeout = true
+			}
+		case 2:
+			time.Sleep(workerData.waitDurationToDelete * 6 / 5)
+
+			select {
+			case workerData.inCh <- "data1":
+			case <-time.After(time.Second):
+				actualResult.isDeletedDueToTimeout = true
+			}
+		}
+
+		close(workerData.inCh)
 		workerData.wg.Wait()
-		actualResult.isWgDone = true
+		actualResult.output = buffer.String()
 
 		if !reflect.DeepEqual(expectedResult, actualResult) {
-			t.Errorf("[%d] Wrong result:\n\tExpected:\t%+v\n\tActual:\t\t%+v", tc.id,
-				expectedResult, actualResult)
+			t.Errorf("[%d] Wrong result:\n\tExpected:\t%#v\n\tActual:\t\t%#v\n\tData:\t\t%+v",
+				tc.id, expectedResult, actualResult, workerData)
 		}
 
 		buffer.Reset()
